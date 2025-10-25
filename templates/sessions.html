@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card wide">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">Datasets</p>
+      <h1>Capture sessions</h1>
+    </div>
+    <a class="outline" href="{{ url_for('index') }}">Start new capture</a>
+  </div>
+  {% if sessions %}
+    <div class="session-grid">
+      {% for session in sessions %}
+        <article class="session-card">
+          <header>
+            <h2>{{ session.session_id }}</h2>
+            <p>{{ session.created_at }}</p>
+          </header>
+          <dl>
+            <div>
+              <dt>Frames</dt>
+              <dd>{{ session.captured }}</dd>
+            </div>
+            <div>
+              <dt>Annotated</dt>
+              <dd>{{ session.annotated }}</dd>
+            </div>
+          </dl>
+          <footer>
+            <a class="primary" href="{{ url_for('annotate_view', session_id=session.session_id) }}">Annotate</a>
+          </footer>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="helper-text">No sessions yet. Start one from the capture page.</p>
+  {% endif %}
+</section>
+{% endblock %}

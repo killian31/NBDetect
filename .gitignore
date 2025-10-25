@@ -1,0 +1,44 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Coverage / test / profiling
+.coverage
+htmlcov/
+coverage.xml
+pytest_cache/
+
+# Logs
+*.log
+
+# Editor & tooling
+.idea/
+.vscode/
+
+# Training artifacts
+runs/
+wandb/
+uploaded_models/
+
+# Dataset & capture output
+dataset/
+
+# Flask / temp files
+instance/
+
+# Checkpoints (optional; comment out if you want to track)
+*.pt
+*.pth
+*.onnx

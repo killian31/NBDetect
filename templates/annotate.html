@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card wide annotation-shell">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">Annotate</p>
+      <h1>Session {{ session_id }}</h1>
+    </div>
+    <a class="outline" href="{{ url_for('sessions_view') }}">Back to sessions</a>
+  </div>
+
+  <div class="annotation-layout">
+    <div class="image-frame">
+      <img id="frame" src="" alt="Captured frame" />
+    </div>
+    <div class="annotation-controls">
+      <h2>Choose a label</h2>
+      <div class="button-stack">
+        <button class="primary large" data-label="biting">Biting nails (B)</button>
+        <button class="secondary large" data-label="not_biting">Not biting (N)</button>
+      </div>
+      <p class="helper-text">Use keyboard shortcuts: B for biting, N for not biting.</p>
+      <p id="progress-label" class="progress-label"></p>
+    </div>
+  </div>
+</section>
+
+<script>
+  const annotateUrl = "{{ url_for('annotate_endpoint', session_id=session_id) }}";
+  const images = {{ images_json|safe }};
+  const placeholderUrl = "{{ url_for('serve_image', session_id=session_id, filename='__FILE__') }}";
+  let currentIndex = Math.min({{ start_index }}, Math.max(images.length - 1, 0));
+  let annotatedCount = images.filter((entry) => entry.label).length;
+
+  const imgEl = document.getElementById("frame");
+  const progressLabel = document.getElementById("progress-label");
+  const buttons = document.querySelectorAll("button[data-label]");
+
+  function updateView() {
+    if (!images.length) {
+      imgEl.alt = "No frames available.";
+      imgEl.src = "";
+      progressLabel.textContent = "No frames available for annotation.";
+      buttons.forEach((btn) => (btn.disabled = true));
+      return;
+    }
+    if (annotatedCount >= images.length) {
+      imgEl.alt = "Annotation complete.";
+      progressLabel.textContent = "All frames annotated. Great work!";
+      buttons.forEach((btn) => (btn.disabled = true));
+      return;
+    }
+    const current = images[currentIndex];
+    imgEl.src = placeholderUrl.replace("__FILE__", encodeURIComponent(current.filename)) + `?t=${Date.now()}`;
+    imgEl.alt = current.filename;
+    progressLabel.textContent = `${annotatedCount} / ${images.length} annotated`;
+    buttons.forEach((btn) => (btn.disabled = false));
+  }
+
+  async function submitLabel(label) {
+    if (!images.length) return;
+    const current = images[currentIndex];
+    try {
+      const response = await fetch(annotateUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: current.filename, label }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        alert(payload.error || "Unable to save label.");
+        return;
+      }
+      if (!current.label) annotatedCount += 1;
+      current.label = label;
+      moveNext();
+    } catch (error) {
+      alert("Unable to save label. Check the console for details.");
+      console.error(error);
+    }
+  }
+
+  function moveNext() {
+    if (annotatedCount >= images.length) {
+      progressLabel.textContent = "All frames annotated. Great work!";
+      buttons.forEach((btn) => (btn.disabled = true));
+      return;
+    }
+    do {
+      currentIndex = (currentIndex + 1) % images.length;
+    } while (images[currentIndex].label);
+    updateView();
+  }
+
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => submitLabel(btn.dataset.label));
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key.toLowerCase() === "b") {
+      event.preventDefault();
+      submitLabel("biting");
+    }
+    if (event.key.toLowerCase() === "n") {
+      event.preventDefault();
+      submitLabel("not_biting");
+    }
+  });
+
+  updateView();
+</script>
+{% endblock %}

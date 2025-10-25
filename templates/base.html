@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "NBDetect Studio" }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body class="page">
+    <header class="app-header">
+      <div class="brand">
+        <span class="dot"></span>
+        <a href="{{ url_for('index') }}">NBDetect Studio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="{{ url_for('index') }}">Capture</a>
+        <a href="{{ url_for('sessions_view') }}">Sessions</a>
+      </nav>
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
