@@ -1,9 +1,7 @@
 import csv
-import random
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import List, Sequence
 
 from PIL import Image
 import torch
@@ -19,14 +17,15 @@ class Record:
     label: str
 
 
-def load_records(dataset_root: Path) -> List[Record]:
-    """Walk every session directory and read annotations.csv entries."""
+def load_split_records(dataset_root: Path, split: str) -> List[Record]:
+    """Read annotated sessions under dataset_root/<split>."""
     dataset_root = dataset_root.expanduser().resolve()
-    if not dataset_root.exists():
-        raise FileNotFoundError(f"Dataset root {dataset_root} does not exist.")
+    split_dir = (dataset_root / split).resolve()
+    if not split_dir.exists() or not split_dir.is_dir():
+        raise FileNotFoundError(f"Split directory {split_dir} does not exist.")
 
     records: List[Record] = []
-    for session_dir in sorted(dataset_root.iterdir()):
+    for session_dir in sorted(split_dir.iterdir()):
         annotations_csv = session_dir / "annotations.csv"
         images_dir = session_dir / "images"
         if not annotations_csv.exists() or not images_dir.exists():
@@ -42,38 +41,8 @@ def load_records(dataset_root: Path) -> List[Record]:
                 if image_path.exists():
                     records.append(Record(image_path=image_path, label=label))
     if not records:
-        raise RuntimeError(f"No annotated samples found in {dataset_root}.")
+        raise RuntimeError(f"No annotated samples found in {split_dir}.")
     return records
-
-
-def split_records(
-    records: Sequence[Record], val_ratio: float = 0.2, seed: int = 13
-) -> Tuple[List[Record], List[Record]]:
-    """Stratified split to maintain label balance."""
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError("val_ratio must be between 0 and 1.")
-
-    buckets: Dict[str, List[Record]] = defaultdict(list)
-    for record in records:
-        buckets[record.label].append(record)
-
-    rng = random.Random(seed)
-    train_records: List[Record] = []
-    val_records: List[Record] = []
-
-    for label, bucket in buckets.items():
-        bucket_copy = list(bucket)
-        rng.shuffle(bucket_copy)
-        val_count = max(1, int(len(bucket_copy) * val_ratio))
-        val_records.extend(bucket_copy[:val_count])
-        train_records.extend(bucket_copy[val_count:])
-
-    if not train_records or not val_records:
-        raise RuntimeError("Not enough data to create stratified split.")
-
-    rng.shuffle(train_records)
-    rng.shuffle(val_records)
-    return train_records, val_records
 
 
 def create_transforms(image_size: int = 224):

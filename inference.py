@@ -12,7 +12,8 @@ from nbdetect.model import INDEX_TO_LABEL, build_model, load_checkpoint
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Realtime inference for nail-biting detection.")
-    parser.add_argument("--weights", type=Path, required=True, help="Path to PyTorch checkpoint (best_model.pt).")
+    parser.add_argument("--weights", type=Path, help="Path to PyTorch checkpoint (best_model.pt).")
+    parser.add_argument("--onnx", type=Path, help="Path to exported ONNX model.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--camera", type=int, default=0, help="Camera index for cv2.VideoCapture.")
     parser.add_argument("--threshold", type=float, default=0.6, help="Probability threshold for alert.")
@@ -33,16 +34,49 @@ def build_transform(image_size: int):
     )
 
 
+def load_onnx_session(onnx_path: Path):
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("onnxruntime is required for ONNX models. Install via `pip install onnxruntime`.") from exc
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    try:
+        session = ort.InferenceSession(str(onnx_path), providers=providers)
+    except Exception:
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+    return session, input_name
+
+
+def run_onnx_inference(session, input_name: str, tensor: torch.Tensor) -> np.ndarray:
+    ort_inputs = {input_name: tensor.numpy()}
+    logits = session.run(None, ort_inputs)[0]
+    probs = torch.softmax(torch.from_numpy(logits), dim=1).numpy()[0]
+    return probs
+
+
 
 
 def main() -> None:
     args = parse_args()
+    if not args.weights and not args.onnx:
+        raise SystemExit("Provide either --weights for PyTorch or --onnx for ONNX inference.")
+
     device = torch.device(args.device)
 
-    model = build_model(pretrained=False)
-    load_checkpoint(model, args.weights, map_location=device)
-    model.to(device)
-    model.eval()
+    use_onnx = args.onnx is not None
+    if use_onnx:
+        ort_session, ort_input = load_onnx_session(args.onnx)
+        model = None
+    else:
+        if not args.weights:
+            raise SystemExit("--weights is required when --onnx is not provided.")
+        model = build_model(pretrained=False)
+        load_checkpoint(model, args.weights, map_location=device)
+        model.to(device)
+        model.eval()
+        ort_session = None
+        ort_input = None
 
     transform = build_transform(args.image_size)
     cap = cv2.VideoCapture(args.camera)
@@ -59,11 +93,14 @@ def main() -> None:
             continue
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        tensor = transform(rgb).unsqueeze(0).to(device)
+        tensor = transform(rgb).unsqueeze(0)
 
-        with torch.no_grad():
-            logits = model(tensor)
-            probs = F.softmax(logits, dim=1).cpu().numpy()[0]
+        if use_onnx:
+            probs = run_onnx_inference(ort_session, ort_input, tensor)
+        else:
+            with torch.no_grad():
+                logits = model(tensor.to(device))
+                probs = F.softmax(logits, dim=1).cpu().numpy()[0]
 
         pred_idx = int(probs.argmax())
         pred_label = INDEX_TO_LABEL[pred_idx]

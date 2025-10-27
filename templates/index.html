@@ -24,6 +24,14 @@
       <span>Interval between shots (seconds)</span>
       <input type="number" name="intervalSeconds" value="3" min="0.2" step="0.1" required />
     </label>
+    <label>
+      <span>Split</span>
+      <select name="splitName" id="split-select">
+        <option value="train">Train</option>
+        <option value="val">Validation</option>
+        <option value="test">Test</option>
+      </select>
+    </label>
     <button type="submit" class="primary">Start capture</button>
   </form>
   <p class="helper-text">
@@ -45,6 +53,10 @@
         <div class="status-line">
           <span>Frames</span>
           <strong id="captured-count">{{ state.captured }}</strong>
+        </div>
+        <div class="status-line">
+          <span>Split</span>
+          <strong id="current-split">{% if state.split %}{{ state.split }}{% else %}-{% endif %}</strong>
         </div>
         <div class="status-line">
           <span>Remaining</span>
@@ -92,16 +104,28 @@
   const captureForm = document.getElementById("capture-form");
   const statusLabel = document.getElementById("status-label");
   const capturedCount = document.getElementById("captured-count");
+  const currentSplit = document.getElementById("current-split");
   const remainingTime = document.getElementById("remaining-time");
   const progressFill = document.getElementById("progress-fill");
   const statusMessage = document.getElementById("status-message");
   const cancelBtn = document.getElementById("cancel-btn");
   const previewImg = document.getElementById("live-preview");
   const previewPlaceholder = document.getElementById("preview-placeholder");
+  const splitSelect = document.getElementById("split-select");
+  const initialSplit = "{{ state.split or '' }}";
+  if (initialSplit && ["train", "val", "test"].includes(initialSplit)) {
+    splitSelect.value = initialSplit;
+  } else {
+    splitSelect.value = "train";
+  }
 
   function updateStatusView(payload) {
     statusLabel.textContent = payload.status.charAt(0).toUpperCase() + payload.status.slice(1);
     capturedCount.textContent = payload.captured ?? 0;
+    currentSplit.textContent = payload.split || "-";
+    if (payload.status === "running" && payload.split && ["train", "val", "test"].includes(payload.split)) {
+      splitSelect.value = payload.split;
+    }
     if (payload.remaining != null) {
       remainingTime.textContent = `${payload.remaining.toFixed(1)}s`;
     } else {
@@ -141,6 +165,9 @@
       if (!response.ok) {
         alert(data.error || "Unable to start capture.");
         return;
+      }
+      if (data.split && ["train", "val", "test"].includes(data.split)) {
+        currentSplit.textContent = data.split;
       }
       statusMessage.textContent = "Capture started. You can navigate away.";
       if (!pollingHandle) pollStatus();

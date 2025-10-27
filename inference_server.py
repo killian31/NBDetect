@@ -19,25 +19,37 @@ app = Flask(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 UPLOAD_DIR = Path("uploaded_models")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-TRANSFORM = transforms.Compose(
-    [
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
-)
+IMAGE_SIZE = 384
+
+
+def build_transform(image_size: int):
+    return transforms.Compose(
+        [
+            transforms.ToPILImage(),
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+
+TRANSFORM = build_transform(IMAGE_SIZE)
 
 MODEL_LOCK = threading.Lock()
 MODEL: Optional[torch.nn.Module] = None
 MODEL_PATH: Optional[Path] = None
+MODEL_FORMAT: Optional[str] = None  # "torch" or "onnx"
+ONNX_SESSION = None
+ONNX_INPUT_NAME = None
+DEFAULT_MODEL_PATH = Path("./checkpoint/model.pt")
 
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, object] = {
     "status": "idle",
     "message": "Load a trained model to begin monitoring.",
     "model_path": None,
-    "threshold": 0.7,
+    "threshold": 0.70,
+    "image_size": IMAGE_SIZE,
     "probabilities": {"biting": 0.0, "not_biting": 0.0},
     "last_detection": None,
     "alert": False,
@@ -63,19 +75,63 @@ def _get_state() -> Dict[str, object]:
 
 
 def load_model(model_path: Path) -> None:
-    global MODEL, MODEL_PATH
-    model = build_model(pretrained=False)
-    load_checkpoint(model, model_path, map_location=DEVICE)
-    model.to(DEVICE)
-    model.eval()
-    with MODEL_LOCK:
-        MODEL = model
-        MODEL_PATH = model_path
+    global MODEL, MODEL_PATH, MODEL_FORMAT, ONNX_SESSION, ONNX_INPUT_NAME
+    suffix = model_path.suffix.lower()
+    if suffix == ".onnx":
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise RuntimeError("onnxruntime is required for ONNX models. Install it with `pip install onnxruntime`.") from exc
+
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        try:
+            session = ort.InferenceSession(str(model_path), providers=providers)
+        except Exception:
+            session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+
+        with MODEL_LOCK:
+            MODEL = None
+            ONNX_SESSION = session
+            ONNX_INPUT_NAME = session.get_inputs()[0].name
+            MODEL_FORMAT = "onnx"
+            MODEL_PATH = model_path
+    else:
+        model = build_model(pretrained=False)
+        load_checkpoint(model, model_path, map_location=DEVICE)
+        model.to(DEVICE)
+        model.eval()
+        with MODEL_LOCK:
+            MODEL = model
+            ONNX_SESSION = None
+            ONNX_INPUT_NAME = None
+            MODEL_FORMAT = "torch"
+            MODEL_PATH = model_path
     _set_state(
         status="ready",
         message="Model loaded. Configure threshold and start monitoring.",
         model_path=str(model_path),
     )
+
+
+def _load_default_model() -> None:
+    if not DEFAULT_MODEL_PATH.exists():
+        _set_state(
+            status="error",
+            message=f"Default model not found at {DEFAULT_MODEL_PATH}.",
+            model_path=None,
+        )
+        return
+    try:
+        load_model(DEFAULT_MODEL_PATH)
+    except Exception as exc:  # pragma: no cover - best effort logging
+        _set_state(
+            status="error",
+            message=f"Failed to load default model: {exc}",
+            model_path=str(DEFAULT_MODEL_PATH),
+        )
+
+
+_load_default_model()
 
 
 def detection_worker(stop_event: threading.Event, resume_event: threading.Event) -> None:
@@ -93,18 +149,32 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
             time.sleep(0.1)
             continue
 
+        image_size = int(_get_state()["image_size"])
+        transform = build_transform(image_size)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        tensor = TRANSFORM(rgb).unsqueeze(0).to(DEVICE)
+        tensor = transform(rgb).unsqueeze(0)
 
         with MODEL_LOCK:
             model = MODEL
-        if model is None:
-            _set_state(status="error", message="Model not loaded.")
-            break
+            session = ONNX_SESSION
+            model_format = MODEL_FORMAT
 
-        with torch.no_grad():
-            logits = model(tensor)
-            probs = F.softmax(logits, dim=1).cpu()[0]
+        if model_format == "onnx":
+            if session is None or ONNX_INPUT_NAME is None:
+                _set_state(status="error", message="ONNX model session not initialized.")
+                break
+            ort_inputs = {ONNX_INPUT_NAME: tensor.numpy()}
+            logits_np = session.run(None, ort_inputs)[0]
+            probs_tensor = torch.softmax(torch.from_numpy(logits_np), dim=1)
+        else:
+            if model is None:
+                _set_state(status="error", message="Model not loaded.")
+                break
+            with torch.no_grad():
+                logits = model(tensor.to(DEVICE))
+                probs_tensor = F.softmax(logits, dim=1).cpu()
+
+        probs = probs_tensor[0]
 
         biting_prob = probs[LABEL_TO_INDEX["biting"]].item()
         not_biting_prob = probs[LABEL_TO_INDEX["not_biting"]].item()
@@ -135,11 +205,6 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
             cv2.LINE_AA,
         )
 
-        _set_state(
-            probabilities={"biting": round(biting_prob, 4), "not_biting": round(not_biting_prob, 4)},
-            message="Monitoring in progress…" if pred_label == "not_biting" else "Potential nail biting detected.",
-        )
-
         triggered = pred_label == "biting" and biting_prob >= threshold
         if triggered:
             cv2.putText(
@@ -152,25 +217,18 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
                 4,
                 cv2.LINE_AA,
             )
-            _set_state(
-                alert=True,
-                status="alert",
-                message="Nail biting detected! Acknowledge to resume.",
-                last_detection=datetime.utcnow().isoformat(),
-            )
-
-            with FRAME_LOCK:
-                success, jpg = cv2.imencode(".jpg", frame)
-                if success:
-                    LATEST_FRAME = jpg.tobytes()
-                    FRAME_EVENT.set()
-
-            while not stop_event.is_set():
-                if resume_event.wait(timeout=0.2):
-                    resume_event.clear()
-                    _set_state(alert=False, status="running", message="Monitoring resumed.")
-                    break
-            continue
+        state_update: Dict[str, object] = {
+            "probabilities": {"biting": round(biting_prob, 4), "not_biting": round(not_biting_prob, 4)},
+            "message": (
+                "Nail biting detected! Stay alert."
+                if triggered
+                else "Monitoring in progress…" if pred_label == "not_biting" else "Potential nail biting detected."
+            ),
+            "alert": triggered,
+        }
+        if triggered:
+            state_update["last_detection"] = datetime.utcnow().isoformat()
+        _set_state(**state_update)
 
         with FRAME_LOCK:
             success, jpg = cv2.imencode(".jpg", frame)
@@ -186,7 +244,9 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
 
 def start_detection(threshold: float) -> None:
     global STOP_EVENT, RESUME_EVENT, DETECTION_THREAD
-    if MODEL is None:
+    with MODEL_LOCK:
+        model_loaded = MODEL is not None or ONNX_SESSION is not None
+    if not model_loaded:
         raise RuntimeError("Load a checkpoint before starting monitoring.")
     if DETECTION_THREAD and DETECTION_THREAD.is_alive():
         raise RuntimeError("Monitoring already in progress.")
@@ -286,6 +346,15 @@ def threshold_route():
     return jsonify({"status": "ok", "threshold": value})
 
 
+@app.post("/image-size")
+def image_size_route():
+    data = request.get_json(force=True, silent=True) or {}
+    value = int(data.get("image_size", IMAGE_SIZE))
+    value = max(64, min(1024, value))
+    _set_state(image_size=value)
+    return jsonify({"status": "ok", "image_size": value})
+
+
 @app.get("/status")
 def status_route():
     return jsonify(_get_state())
@@ -307,8 +376,19 @@ def video_feed():
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.get("/latest_frame")
+def latest_frame_route():
+    with FRAME_LOCK:
+        frame = LATEST_FRAME
+    if not frame:
+        return Response(status=204)
+    response = Response(frame, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+
 def main():
-    app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5050, debug=True, threaded=False)
 
 
 if __name__ == "__main__":

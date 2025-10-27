@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 from flask import (
@@ -26,6 +26,10 @@ app = Flask(__name__)
 DATASET_ROOT = Path("dataset")
 DATASET_ROOT.mkdir(parents=True, exist_ok=True)
 
+SPLITS = ("train", "val", "test")
+for split_name in SPLITS:
+    (DATASET_ROOT / split_name).mkdir(parents=True, exist_ok=True)
+
 ALLOWED_LABELS = {"biting", "not_biting"}
 CSV_HEADERS = ["filename", "label", "captured_at", "annotated_at"]
 
@@ -36,6 +40,7 @@ CAPTURE_STATE: Dict[str, Optional[object]] = {
     "status": "idle",
     "session_id": None,
     "session_dir": None,
+    "split": None,
     "duration": 0.0,
     "started_at": None,
     "captured": 0,
@@ -70,6 +75,7 @@ def _public_state() -> Dict[str, object]:
     return {
         "status": state_copy["status"],
         "sessionId": state_copy["session_id"],
+        "split": state_copy.get("split"),
         "captured": state_copy["captured"],
         "message": state_copy["message"],
         "progress": progress,
@@ -90,16 +96,24 @@ def _update_preview(frame: Optional[bytes]) -> None:
         LATEST_PREVIEW = frame
 
 
-def start_capture(session_name: str, duration_minutes: float, interval_seconds: float) -> str:
+def start_capture(
+    session_name: str,
+    duration_minutes: float,
+    interval_seconds: float,
+    split: str,
+) -> str:
     if interval_seconds <= 0:
         raise ValueError("Interval must be greater than zero.")
     duration_seconds = duration_minutes * 60
     if duration_seconds <= 0:
         raise ValueError("Duration must be greater than zero.")
 
+    if split not in SPLITS:
+        raise ValueError(f"Split must be one of {', '.join(SPLITS)}")
+
     session_slug = slugify(session_name or "session")
     session_id = f"{session_slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    session_dir = DATASET_ROOT / session_id
+    session_dir = DATASET_ROOT / split / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     images_dir = session_dir / "images"
     images_dir.mkdir(exist_ok=True)
@@ -120,6 +134,7 @@ def start_capture(session_name: str, duration_minutes: float, interval_seconds: 
                 "status": "running",
                 "session_id": session_id,
                 "session_dir": session_dir,
+                "split": split,
                 "duration": duration_seconds,
                 "started_at": time.time(),
                 "captured": 0,
@@ -203,33 +218,61 @@ def cancel_capture() -> None:
         stop_event.set()
 
 
-def list_sessions() -> List[Dict[str, object]]:
-    sessions = []
+def list_sessions() -> Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, Dict[str, int]]]:
+    groups: List[Dict[str, object]] = []
     dataset_root = DATASET_ROOT.resolve()
-    for session_dir in sorted(dataset_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        images_dir = session_dir / "images"
-        if not images_dir.exists():
-            continue
-        session_id = session_dir.name
-        image_files = sorted(images_dir.glob("*.jpg"))
-        annotations = _load_annotations(session_dir)
-        sessions.append(
-            {
-                "session_id": session_id,
-                "captured": len(image_files),
-                "annotated": len(annotations),
-                "created_at": datetime.fromtimestamp(session_dir.stat().st_mtime).strftime("%b %d, %Y %H:%M"),
-            }
-        )
-    return sessions
+    totals = {"captured": 0, "annotated": 0}
+    label_totals = {"biting": 0, "not_biting": 0}
+    for split in SPLITS:
+        split_dir = (dataset_root / split).resolve()
+        sessions: List[Dict[str, object]] = []
+        split_captured = 0
+        split_annotated = 0
+        split_labels = {"biting": 0, "not_biting": 0}
+        if split_dir.exists():
+            for session_dir in sorted(split_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                images_dir = session_dir / "images"
+                if not images_dir.exists():
+                    continue
+                session_id = session_dir.name
+                image_files = sorted(images_dir.glob("*.jpg"))
+                annotations = _load_annotations(session_dir)
+                captured_count = len(image_files)
+                annotated_count = len(annotations)
+                for ann in annotations.values():
+                    label = ann.get("label")
+                    if label in split_labels:
+                        split_labels[label] += 1
+                sessions.append(
+                    {
+                        "session_id": session_id,
+                        "captured": captured_count,
+                        "annotated": annotated_count,
+                        "created_at": datetime.fromtimestamp(session_dir.stat().st_mtime).strftime(
+                            "%b %d, %Y %H:%M"
+                        ),
+                        "split": split,
+                    }
+                )
+                split_captured += captured_count
+                split_annotated += annotated_count
+        totals["captured"] += split_captured
+        totals["annotated"] += split_annotated
+        for label_name, count in split_labels.items():
+            label_totals[label_name] += count
+        groups.append({"split": split, "sessions": sessions, "captured": split_captured, "annotated": split_annotated})
+        groups[-1]["label_counts"] = split_labels
+    return groups, totals, label_totals
 
 
-def _ensure_session_dir(session_id: str) -> Path:
+def _ensure_session_dir(split: str, session_id: str) -> Path:
+    if split not in SPLITS:
+        abort(404)
     dataset_root = DATASET_ROOT.resolve()
-    candidate = (DATASET_ROOT / session_id).resolve()
+    candidate = (DATASET_ROOT / split / session_id).resolve()
     if not candidate.exists() or not candidate.is_dir():
         abort(404)
-    if dataset_root not in candidate.parents and candidate != dataset_root:
+    if dataset_root not in candidate.parents:
         abort(404)
     return candidate
 
@@ -289,10 +332,11 @@ def start_endpoint():
         session_name = data.get("sessionName", "")
         duration = float(data.get("durationMinutes", 5))
         interval = float(data.get("intervalSeconds", 5))
-        session_id = start_capture(session_name, duration, interval)
+        split = data.get("splitName", "train")
+        session_id = start_capture(session_name, duration, interval, split)
     except (ValueError, RuntimeError) as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"status": "ok", "sessionId": session_id})
+    return jsonify({"status": "ok", "sessionId": session_id, "split": split})
 
 
 @app.post("/cancel")
@@ -308,7 +352,15 @@ def status_endpoint():
 
 @app.get("/sessions")
 def sessions_view():
-    return render_template("sessions.html", sessions=list_sessions())
+    session_groups, totals, label_totals = list_sessions()
+    has_any = any(group["sessions"] for group in session_groups)
+    return render_template(
+        "sessions.html",
+        sessions=session_groups,
+        totals=totals,
+        label_totals=label_totals,
+        has_any=has_any,
+    )
 
 
 @app.get("/preview")
@@ -322,9 +374,9 @@ def preview_endpoint():
     return response
 
 
-@app.get("/annotate/<session_id>")
-def annotate_view(session_id: str):
-    session_dir = _ensure_session_dir(session_id)
+@app.get("/annotate/<split>/<session_id>")
+def annotate_view(split: str, session_id: str):
+    session_dir = _ensure_session_dir(split, session_id)
     images_dir = session_dir / "images"
     image_files = sorted([p.name for p in images_dir.glob("*.jpg")])
     annotations = _load_annotations(session_dir)
@@ -338,15 +390,16 @@ def annotate_view(session_id: str):
         start_index = 0
     return render_template(
         "annotate.html",
+        split=split,
         session_id=session_id,
         images_json=json.dumps(payload),
         start_index=start_index,
     )
 
 
-@app.post("/annotate/<session_id>")
-def annotate_endpoint(session_id: str):
-    session_dir = _ensure_session_dir(session_id)
+@app.post("/annotate/<split>/<session_id>")
+def annotate_endpoint(split: str, session_id: str):
+    session_dir = _ensure_session_dir(split, session_id)
     data = request.get_json(force=True, silent=True) or {}
     filename = data.get("filename", "")
     label = data.get("label", "")
@@ -361,15 +414,15 @@ def annotate_endpoint(session_id: str):
     return jsonify({"status": "ok"})
 
 
-@app.get("/dataset/<session_id>/<path:filename>")
-def serve_image(session_id: str, filename: str):
-    session_dir = _ensure_session_dir(session_id)
+@app.get("/dataset/<split>/<session_id>/<path:filename>")
+def serve_image(split: str, session_id: str, filename: str):
+    session_dir = _ensure_session_dir(split, session_id)
     images_dir = session_dir / "images"
     return send_from_directory(images_dir, filename)
 
 
 def main() -> None:
-    app.run(host="0.0.0.0", port=5009, debug=True)
+    app.run(host="0.0.0.0", port=5009, debug=False)
 
 
 if __name__ == "__main__":

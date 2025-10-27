@@ -1,14 +1,16 @@
 import argparse
 import json
+import time
+from collections import Counter
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from nbdetect.data import NailBitingDataset, create_transforms, load_records, split_records
-from nbdetect.model import build_model
+from nbdetect.data import NailBitingDataset, Record, create_transforms, load_split_records
+from nbdetect.model import LABEL_TO_INDEX, build_model, load_checkpoint
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,12 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("runs/latest"), help="Directory to store checkpoints.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=29)
+    parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--freeze-base", action="store_true", help="Freeze backbone and train classifier only.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging.")
@@ -34,15 +35,56 @@ def parse_args() -> argparse.Namespace:
         help="Export the best checkpoint to ONNX after training completes.",
     )
     parser.add_argument("--onnx-output", type=Path, default=None, help="Destination for ONNX model.")
+    parser.add_argument(
+        "--class-balance",
+        action="store_true",
+        help="Use class-weighted loss to handle label imbalance.",
+    )
+    parser.add_argument(
+        "--lr-decay-milestones",
+        type=str,
+        default="",
+        help="Comma-separated epochs (e.g., 6,9) where LR is divided.",
+    )
+    parser.add_argument(
+        "--lr-decay-factor",
+        type=float,
+        default=1.0,
+        help="Divide LR by this factor at each milestone (>1).",
+    )
     return parser.parse_args()
 
 
-def create_loaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
-    records = load_records(args.dataset)
-    train_records, val_records = split_records(records, val_ratio=args.val_ratio, seed=args.seed)
+def compute_class_weights(records: List[Record]) -> List[float]:
+    counts = Counter(record.label for record in records)
+    total = sum(counts.values())
+    num_classes = len(LABEL_TO_INDEX)
+    if total == 0:
+        raise RuntimeError("No records available to compute class weights.")
+    weights: List[float] = []
+    for label, idx in sorted(LABEL_TO_INDEX.items(), key=lambda item: item[1]):
+        count = counts.get(label, 0)
+        if count == 0:
+            raise RuntimeError(f"No samples found for label '{label}' to compute class weights.")
+        weight = total / (num_classes * count)
+        weights.append(weight)
+    return weights
+
+
+def create_loaders(
+    args: argparse.Namespace,
+) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[List[float]]]:
+    train_records = load_split_records(args.dataset, "train")
+    val_records = load_split_records(args.dataset, "val")
+    test_records = load_split_records(args.dataset, "test")
+
+    class_weights = compute_class_weights(train_records) if args.class_balance else None
+
     train_tf, eval_tf = create_transforms(image_size=args.image_size)
     train_ds = NailBitingDataset(train_records, transform=train_tf)
     val_ds = NailBitingDataset(val_records, transform=eval_tf)
+    test_ds = NailBitingDataset(test_records, transform=eval_tf)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -57,7 +99,14 @@ def create_loaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
         num_workers=args.num_workers,
         pin_memory=True,
     )
-    return train_loader, val_loader
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    return train_loader, val_loader, test_loader, class_weights
 
 
 def init_wandb(args: argparse.Namespace):
@@ -138,6 +187,8 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
     total_loss = 0.0
     total_correct = 0
     total_examples = 0
+    preds_all: List[torch.Tensor] = []
+    labels_all: List[torch.Tensor] = []
 
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
@@ -149,11 +200,52 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
         total_loss += loss.item() * labels.size(0)
         total_correct += (preds == labels).sum().item()
         total_examples += labels.size(0)
+        preds_all.append(preds.detach().cpu())
+        labels_all.append(labels.detach().cpu())
+
+    if preds_all:
+        preds_cat = torch.cat(preds_all)
+        labels_cat = torch.cat(labels_all)
+        positive_idx = LABEL_TO_INDEX["biting"]
+        negative_idx = LABEL_TO_INDEX["not_biting"]
+        tp = torch.sum((preds_cat == positive_idx) & (labels_cat == positive_idx)).item()
+        fp = torch.sum((preds_cat == positive_idx) & (labels_cat == negative_idx)).item()
+        fn = torch.sum((preds_cat == negative_idx) & (labels_cat == positive_idx)).item()
+        tn = torch.sum((preds_cat == negative_idx) & (labels_cat == negative_idx)).item()
+    else:
+        tp = fp = fn = tn = 0
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    accuracy = total_correct / total_examples if total_examples else 0.0
 
     return {
-        "loss": total_loss / total_examples,
-        "accuracy": total_correct / total_examples,
+        "loss": total_loss / total_examples if total_examples else 0.0,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "true_positives": tp,
+        "false_positives": fp,
+        "false_negatives": fn,
+        "true_negatives": tn,
     }
+
+
+def parse_milestones(arg_value: str) -> List[int]:
+    if not arg_value.strip():
+        return []
+    milestones = []
+    for token in arg_value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        value = int(token)
+        if value <= 0:
+            raise ValueError("Milestones must be positive integers.")
+        milestones.append(value)
+    return sorted(set(milestones))
 
 
 def main() -> None:
@@ -162,23 +254,49 @@ def main() -> None:
     device = torch.device(args.device)
 
     print(f"Using device: {device}")
-    train_loader, val_loader = create_loaders(args)
+    train_loader, val_loader, test_loader, class_weights = create_loaders(args)
+    weight_tensor = (
+        torch.tensor(class_weights, dtype=torch.float32, device=device) if class_weights is not None else None
+    )
 
     model = build_model(pretrained=True, freeze_base=args.freeze_base).to(device)
-    criterion = nn.CrossEntropyLoss()
+    print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters.")
+    if class_weights:
+        print(f"Using class weights: {class_weights}")
+    else:
+        print("Not using class weights.")
+    criterion = nn.CrossEntropyLoss(weight=weight_tensor)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    try:
+        milestones = parse_milestones(args.lr_decay_milestones)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    scheduler = None
+    if milestones and args.lr_decay_factor > 1.0:
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=milestones, gamma=1.0 / args.lr_decay_factor
+        )
 
     wandb_run = init_wandb(args)
 
+    best_val_fp = float("inf")
     best_val_acc = 0.0
     history = {"train": [], "val": []}
     best_ckpt_path = args.output / "best_model.pt"
 
+    epoch_start_time = None
     for epoch in range(1, args.epochs + 1):
+        epoch_start_time = time.time()
         train_stats = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_stats = evaluate(model, val_loader, criterion, device)
-        scheduler.step()
+        if scheduler:
+            scheduler.step()
+
+        current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
+        elapsed = time.time() - epoch_start_time
+        remaining_epochs = args.epochs - epoch
+        eta_seconds = remaining_epochs * elapsed
+        eta_formatted = time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
 
         history["train"].append({"epoch": epoch, **train_stats})
         history["val"].append({"epoch": epoch, **val_stats})
@@ -186,7 +304,9 @@ def main() -> None:
         print(
             f"Epoch {epoch:02d} | "
             f"train_loss={train_stats['loss']:.4f} acc={train_stats['accuracy']:.3f} | "
-            f"val_loss={val_stats['loss']:.4f} acc={val_stats['accuracy']:.3f}"
+            f"val_loss={val_stats['loss']:.4f} acc={val_stats['accuracy']:.3f} "
+            f"prec={val_stats['precision']:.3f} rec={val_stats['recall']:.3f} f1={val_stats['f1']:.3f} "
+            f"fp={val_stats['false_positives']} | epoch_time={elapsed:.1f}s | eta={eta_formatted}"
         )
 
         if wandb_run:
@@ -197,29 +317,82 @@ def main() -> None:
                     "train/accuracy": train_stats["accuracy"],
                     "val/loss": val_stats["loss"],
                     "val/accuracy": val_stats["accuracy"],
-                    "lr": scheduler.get_last_lr()[0],
+                    "val/precision": val_stats["precision"],
+                    "val/recall": val_stats["recall"],
+                    "val/f1": val_stats["f1"],
+                    "val/false_positives": val_stats["false_positives"],
+                    "lr": current_lr,
                 }
             )
 
-        if val_stats["accuracy"] >= best_val_acc:
+        epoch_ckpt_path = args.output / f"epoch_{epoch:02d}.pt"
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "epoch": epoch,
+                "val_metrics": val_stats,
+                "args": vars(args),
+            },
+            epoch_ckpt_path,
+        )
+
+        if val_stats["false_positives"] < best_val_fp or (
+            val_stats["false_positives"] == best_val_fp and val_stats["accuracy"] >= best_val_acc
+        ):
+            best_val_fp = val_stats["false_positives"]
             best_val_acc = val_stats["accuracy"]
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "epoch": epoch,
-                    "val_accuracy": best_val_acc,
+                    "val_metrics": val_stats,
                     "args": vars(args),
                 },
                 best_ckpt_path,
             )
-            print(f"  ↳ Saved new best checkpoint to {best_ckpt_path}")
+            print(
+                f"  ↳ Saved new best checkpoint to {best_ckpt_path} (val_fp={best_val_fp}, acc={best_val_acc:.3f})"
+            )
             if wandb_run:
-                wandb_run.log({"best/val_accuracy": best_val_acc, "best_epoch": epoch})
+                wandb_run.log(
+                    {
+                        "best/val_false_positives": best_val_fp,
+                        "best/val_accuracy": best_val_acc,
+                        "best_epoch": epoch,
+                    }
+                )
+
+    print(f"Training complete. Best validation accuracy: {best_val_acc:.3f}")
+
+    best_model = build_model(pretrained=False)
+    load_checkpoint(best_model, best_ckpt_path, map_location=device)
+    best_model.to(device)
+    test_stats = evaluate(best_model, test_loader, criterion, device)
+    history["test"] = test_stats
+
+    print(
+        "Test set performance | "
+        f"loss={test_stats['loss']:.4f} acc={test_stats['accuracy']:.3f} "
+        f"prec={test_stats['precision']:.3f} rec={test_stats['recall']:.3f} "
+        f"f1={test_stats['f1']:.3f} fp={test_stats['false_positives']}"
+    )
+
+    if wandb_run:
+        wandb_run.log(
+            {
+                "test/loss": test_stats["loss"],
+                "test/accuracy": test_stats["accuracy"],
+                "test/precision": test_stats["precision"],
+                "test/recall": test_stats["recall"],
+                "test/f1": test_stats["f1"],
+                "test/false_positives": test_stats["false_positives"],
+            }
+        )
 
     metrics_path = args.output / "metrics.json"
     metrics_path.write_text(json.dumps(history, indent=2))
-    print(f"Training complete. Best validation accuracy: {best_val_acc:.3f}")
     print(f"Metrics log saved to {metrics_path}")
 
     if args.export_onnx:

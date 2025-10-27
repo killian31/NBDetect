@@ -3,7 +3,7 @@
 <section class="card wide annotation-shell">
   <div class="card-header">
     <div>
-      <p class="eyebrow">Annotate</p>
+      <p class="eyebrow">Annotate · {{ split|capitalize }} split</p>
       <h1>Session {{ session_id }}</h1>
     </div>
     <a class="outline" href="{{ url_for('sessions_view') }}">Back to sessions</a>
@@ -26,9 +26,10 @@
 </section>
 
 <script>
-  const annotateUrl = "{{ url_for('annotate_endpoint', session_id=session_id) }}";
+  const split = "{{ split }}";
+  const annotateUrl = "{{ url_for('annotate_endpoint', split=split, session_id=session_id) }}";
   const images = {{ images_json|safe }};
-  const placeholderUrl = "{{ url_for('serve_image', session_id=session_id, filename='__FILE__') }}";
+  const placeholderUrl = "{{ url_for('serve_image', split=split, session_id=session_id, filename='__FILE__') }}";
   let currentIndex = Math.min({{ start_index }}, Math.max(images.length - 1, 0));
   let annotatedCount = images.filter((entry) => entry.label).length;
 

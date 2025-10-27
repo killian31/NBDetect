@@ -8,31 +8,91 @@
     </div>
     <a class="outline" href="{{ url_for('index') }}">Start new capture</a>
   </div>
-  {% if sessions %}
-    <div class="session-grid">
-      {% for session in sessions %}
-        <article class="session-card">
-          <header>
-            <h2>{{ session.session_id }}</h2>
-            <p>{{ session.created_at }}</p>
-          </header>
-          <dl>
-            <div>
-              <dt>Frames</dt>
-              <dd>{{ session.captured }}</dd>
-            </div>
-            <div>
-              <dt>Annotated</dt>
-              <dd>{{ session.annotated }}</dd>
-            </div>
-          </dl>
-          <footer>
-            <a class="primary" href="{{ url_for('annotate_view', session_id=session.session_id) }}">Annotate</a>
-          </footer>
+  {% if totals.captured or totals.annotated %}
+    <div class="split-summary">
+      <article class="summary-card">
+        <h2>Dataset overview</h2>
+        <p>Total frames: <strong>{{ totals.captured }}</strong></p>
+        <p>Total annotated: <strong>{{ totals.annotated }}</strong></p>
+        <p>Biting labels: <strong>{{ label_totals.biting }}</strong>
+          {% if label_totals.biting + label_totals.not_biting %}
+            <span class="summary-meta">({{ '%.1f'|format(100 * label_totals.biting / (label_totals.biting + label_totals.not_biting)) }}%)</span>
+          {% endif %}
+        </p>
+        <p>Not biting labels: <strong>{{ label_totals.not_biting }}</strong>
+          {% if label_totals.biting + label_totals.not_biting %}
+            <span class="summary-meta">({{ '%.1f'|format(100 * label_totals.not_biting / (label_totals.biting + label_totals.not_biting)) }}%)</span>
+          {% endif %}
+        </p>
+      </article>
+      {% for group in sessions %}
+        <article class="summary-card">
+          <h3>{{ group.split|capitalize }}</h3>
+          <p>Frames: <strong>{{ group.captured }}</strong>
+            {% if totals.captured %}
+              <span class="summary-meta">({{ '%.1f'|format(100 * group.captured / totals.captured) }}%)</span>
+            {% endif %}
+          </p>
+          <p>Annotated: <strong>{{ group.annotated }}</strong>
+            {% if totals.annotated %}
+              <span class="summary-meta">({{ '%.1f'|format(100 * group.annotated / totals.annotated) }}%)</span>
+            {% endif %}
+          </p>
+          <p>Biting: <strong>{{ group.label_counts.biting }}</strong>
+            {% set split_total = group.label_counts.biting + group.label_counts.not_biting %}
+            {% if split_total %}
+              <span class="summary-meta">({{ '%.1f'|format(100 * group.label_counts.biting / split_total) }}%)</span>
+            {% endif %}
+          </p>
+          <p>Not biting: <strong>{{ group.label_counts.not_biting }}</strong>
+            {% if split_total %}
+              <span class="summary-meta">({{ '%.1f'|format(100 * group.label_counts.not_biting / split_total) }}%)</span>
+            {% endif %}
+          </p>
         </article>
       {% endfor %}
     </div>
-  {% else %}
+  {% endif %}
+  {% for group in sessions %}
+    <div class="split-block">
+      <h2>{{ group.split|capitalize }} split</h2>
+      {% if group.sessions %}
+        <div class="session-grid">
+          {% for session in group.sessions %}
+            <article class="session-card">
+              <header>
+                <h2>{{ session.session_id }}</h2>
+                <p>{{ session.created_at }}</p>
+              </header>
+              <dl>
+                <div>
+                  <dt>Frames</dt>
+                  <dd>{{ session.captured }}</dd>
+                </div>
+                <div>
+                  <dt>Annotated</dt>
+                  <dd>{{ session.annotated }}</dd>
+                </div>
+              </dl>
+              <footer>
+                {% if session.annotated == 0 %}
+                  {% set btn_class = 'annotate-btn annotate-empty' %}
+                {% elif session.annotated < session.captured %}
+                  {% set btn_class = 'annotate-btn annotate-partial' %}
+                {% else %}
+                  {% set btn_class = 'annotate-btn annotate-complete' %}
+                {% endif %}
+                <a class="{{ btn_class }}" href="{{ url_for('annotate_view', split=group.split, session_id=session.session_id) }}">Annotate</a>
+              </footer>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="helper-text">No sessions in this split yet.</p>
+      {% endif %}
+    </div>
+  {% endfor %}
+  {% if not has_any %}
     <p class="helper-text">No sessions yet. Start one from the capture page.</p>
   {% endif %}
 </section>

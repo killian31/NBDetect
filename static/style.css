@@ -106,8 +106,10 @@ a {
 }
 
 .input-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
+  align-items: center;
 }
 
 .button-set {
@@ -117,11 +119,54 @@ a {
   align-items: center;
 }
 
+.button-set.full {
+  grid-column: 1 / -1;
+}
+
 .monitor-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 20px;
   align-items: start;
+}
+
+.split-block {
+  margin-bottom: 28px;
+}
+
+.split-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.summary-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.summary-card h2,
+.summary-card h3 {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.summary-card p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+
+.summary-card strong {
+  color: var(--text);
+}
+
+.summary-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-left: 4px;
 }
 
 .compact-grid {
@@ -359,6 +404,39 @@ button:disabled {
   color: var(--accent-light);
   background: transparent;
   text-decoration: none;
+}
+
+
+.annotate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 20px;
+  border-radius: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border: none;
+}
+
+.annotate-empty {
+  background: linear-gradient(120deg, #ff5f7e, #d72638);
+  box-shadow: 0 10px 30px rgba(215, 38, 56, 0.35);
+}
+
+.annotate-partial {
+  background: linear-gradient(120deg, #ffb347, #ff7b00);
+  box-shadow: 0 10px 30px rgba(255, 123, 0, 0.35);
+}
+
+.annotate-complete {
+  background: linear-gradient(120deg, #4cd964, #1abc9c);
+  box-shadow: 0 10px 30px rgba(76, 217, 100, 0.35);
+}
+
+.annotate-btn:hover {
+  transform: translateY(-2px);
 }
 
 button:hover:not(:disabled),
