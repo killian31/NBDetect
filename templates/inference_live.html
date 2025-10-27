@@ -10,22 +10,23 @@
   </div>
   <div class="control-grid">
     <label>
-      <span>Checkpoint</span>
-      <div class="input-row">
-        <input type="text" id="model-display" placeholder="No model selected" readonly />
-        <button id="browse-btn" class="secondary">Browse…</button>
-        <input type="file" id="file-input" accept=".pt,.pth" hidden />
-      </div>
-    </label>
-    <label>
       <span>Alert threshold</span>
       <input type="range" id="threshold" min="0.1" max="0.95" step="0.05" value="{{ state.threshold }}" />
       <small class="helper-text">Trigger alert when biting probability ≥ <span id="threshold-value">{{ state.threshold }}</span></small>
     </label>
-    <div class="button-set">
+    <label>
+      <span>Input image size</span>
+      <div class="input-row">
+        <input type="number" id="image-size" min="64" max="1024" step="32" value="{{ state.image_size }}" />
+        <button id="apply-image-size" class="ghost">Apply</button>
+      </div>
+      <small class="helper-text">Match the resolution your model expects (e.g., 224 or 512).</small>
+    </label>
+    <div class="button-set full">
       <button id="start-btn" class="primary" disabled>Start monitoring</button>
       <button id="stop-btn" class="ghost" disabled>Stop</button>
     </div>
+    <p class="helper-text full-row">Using model: <span id="model-path-display">{{ state.model_path or "runs/mobilenetv2_2500/epoch_10.pt" }}</span></p>
   </div>
 </section>
 
@@ -39,7 +40,7 @@
       <span class="helper-text">Alerts freeze the stream until acknowledged.</span>
     </div>
     <div class="preview-frame small">
-      <img id="video-feed" src="{{ url_for('video_feed') }}" alt="Video feed appears once monitoring starts." />
+      <img id="video-feed" data-stream-url="{{ url_for('video_feed') }}" src="{{ url_for('video_feed') }}" alt="Video feed appears once monitoring starts." />
       <div id="overlay-alert" class="alert-overlay hidden">
         <div class="alert-box">
           <p class="eyebrow">Warning</p>
@@ -82,18 +83,16 @@
 
 <script>
   const statusUrl = "{{ url_for('status_route') }}";
-  const loadModelUrl = "{{ url_for('load_model_route') }}";
-  const uploadModelUrl = "{{ url_for('upload_model_route') }}";
   const startUrl = "{{ url_for('start_route') }}";
   const stopUrl = "{{ url_for('stop_route') }}";
   const ackUrl = "{{ url_for('acknowledge_route') }}";
   const thresholdUrl = "{{ url_for('threshold_route') }}";
+  const imageSizeUrl = "{{ url_for('image_size_route') }}";
 
-  const modelDisplay = document.getElementById("model-display");
-  const browseBtn = document.getElementById("browse-btn");
-  const fileInput = document.getElementById("file-input");
   const thresholdInput = document.getElementById("threshold");
   const thresholdValue = document.getElementById("threshold-value");
+  const imageSizeInput = document.getElementById("image-size");
+  const applyImageSizeBtn = document.getElementById("apply-image-size");
   const startBtn = document.getElementById("start-btn");
   const stopBtn = document.getElementById("stop-btn");
   const overlay = document.getElementById("overlay-alert");
@@ -102,9 +101,19 @@
   const bitingProbEl = document.getElementById("biting-prob");
   const notBitingProbEl = document.getElementById("not-biting-prob");
   const lastDetectionEl = document.getElementById("last-detection");
+  const modelPathDisplay = document.getElementById("model-path-display");
 
   let modelReady = {{ "true" if state.model_path else "false" }};
   if (modelReady) startBtn.disabled = false;
+  if (modelPathDisplay && !modelPathDisplay.textContent.trim()) {
+    modelPathDisplay.textContent = "runs/mobilenetv2_2500/epoch_10.pt";
+  }
+
+  let alertActive = false;
+  let notificationPermissionRequested = false;
+  let audioContext = null;
+  let alertOscillator = null;
+  let toneTimeout = null;
 
   thresholdInput.addEventListener("input", () => {
     thresholdValue.textContent = Number(thresholdInput.value).toFixed(2);
@@ -114,36 +123,29 @@
     updateThreshold(Number(thresholdInput.value));
   });
 
-  browseBtn.addEventListener("click", () => fileInput.click());
-
-  fileInput.addEventListener("change", async () => {
-    if (!fileInput.files.length) return;
-    const file = fileInput.files[0];
-    modelDisplay.value = file.name;
-    const formData = new FormData();
-    formData.append("file", file);
+  applyImageSizeBtn.addEventListener("click", async () => {
+    const value = Number(imageSizeInput.value);
+    if (!value || value < 64 || value > 1024) {
+      alert("Enter an image size between 64 and 1024.");
+      return;
+    }
     try {
-      const response = await fetch(uploadModelUrl, { method: "POST", body: formData });
-      const payload = await response.json();
+      const response = await fetch(imageSizeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_size: value }),
+      });
       if (!response.ok) {
-        alert(payload.error || "Unable to load checkpoint.");
-        return;
-      }
-      modelReady = true;
-      statusMessage.textContent = "Model loaded. You can start monitoring.";
-      if (payload.modelPath) {
-        modelDisplay.value = payload.modelPath;
-      }
-      if (!["running", "alert"].includes(payload.status)) {
-        startBtn.disabled = false;
+        const payload = await response.json();
+        alert(payload.error || "Failed to apply image size.");
       }
     } catch (error) {
-      alert("Failed to load model. Check console.");
-      console.error(error);
+      console.error("Failed to update image size", error);
     }
   });
 
   startBtn.addEventListener("click", async () => {
+    prepareAlertSystems();
     try {
       const response = await fetch(startUrl, {
         method: "POST",
@@ -167,6 +169,9 @@
       await fetch(stopUrl, { method: "POST" });
       stopBtn.disabled = true;
       startBtn.disabled = false;
+      overlay.classList.add("hidden");
+      stopAlertTone();
+      alertActive = false;
     } catch (error) {
       console.error(error);
     }
@@ -179,6 +184,8 @@
       console.error(error);
     } finally {
       overlay.classList.add("hidden");
+      stopAlertTone();
+      alertActive = false;
     }
   });
 
@@ -202,19 +209,18 @@
       bitingProbEl.textContent = payload.probabilities.biting.toFixed(2);
       notBitingProbEl.textContent = payload.probabilities.not_biting.toFixed(2);
       statusMessage.textContent = payload.message || "";
-      if (payload.last_detection) {
-        lastDetectionEl.textContent = payload.last_detection;
-      } else {
-        lastDetectionEl.textContent = "-";
-      }
+      lastDetectionEl.textContent = payload.last_detection || "-";
+
       if (Math.abs(payload.threshold - Number(thresholdInput.value)) > 1e-3) {
         thresholdInput.value = payload.threshold;
         thresholdValue.textContent = Number(payload.threshold).toFixed(2);
       }
-      if (payload.model_path) {
+
+      if (payload.model_path && modelPathDisplay) {
         modelReady = true;
-        modelDisplay.value = payload.model_path;
+        modelPathDisplay.textContent = payload.model_path;
       }
+
       if (payload.status === "running" || payload.alert) {
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -222,15 +228,93 @@
         stopBtn.disabled = true;
         startBtn.disabled = !modelReady;
       }
+
       if (payload.alert) {
         overlay.classList.remove("hidden");
+        if (!alertActive) {
+          alertActive = true;
+          triggerAlertEffects();
+        }
       } else {
         overlay.classList.add("hidden");
+        if (alertActive) {
+          stopAlertTone();
+          alertActive = false;
+        }
       }
     } catch (error) {
       console.error("Status poll failed", error);
     } finally {
       setTimeout(pollStatus, 1200);
+    }
+  }
+
+  function prepareAlertSystems() {
+    if (!notificationPermissionRequested && "Notification" in window) {
+      Notification.requestPermission();
+      notificationPermissionRequested = true;
+    }
+    if (!audioContext && (window.AudioContext || window.webkitAudioContext)) {
+      try {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        audioContext = new Ctor();
+      } catch (error) {
+        console.warn("Unable to initialize audio context", error);
+      }
+    }
+  }
+
+  function triggerAlertEffects() {
+    playAlertTone();
+    showSystemNotification();
+  }
+
+  function playAlertTone() {
+    if (!audioContext) {
+      prepareAlertSystems();
+    }
+    if (!audioContext) {
+      return;
+    }
+    if (audioContext.state === "suspended") {
+      audioContext.resume().catch(() => {});
+    }
+    stopAlertTone();
+    alertOscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    alertOscillator.type = "square";
+    alertOscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.25, audioContext.currentTime + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.002, audioContext.currentTime + 1.5);
+    alertOscillator.connect(gain).connect(audioContext.destination);
+    alertOscillator.start();
+    toneTimeout = setTimeout(stopAlertTone, 1600);
+  }
+
+  function stopAlertTone() {
+    if (toneTimeout) {
+      clearTimeout(toneTimeout);
+      toneTimeout = null;
+    }
+    if (alertOscillator) {
+      try {
+        alertOscillator.stop();
+      } catch (_) {}
+      alertOscillator.disconnect();
+      alertOscillator = null;
+    }
+  }
+
+  function showSystemNotification() {
+    if (!("Notification" in window)) {
+      return;
+    }
+    if (Notification.permission === "granted") {
+      new Notification("NBDetect", {
+        body: "Nail biting detected!",
+        requireInteraction: true,
+      });
     }
   }
 

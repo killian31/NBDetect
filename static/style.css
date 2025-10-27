@@ -123,6 +123,10 @@ a {
   grid-column: 1 / -1;
 }
 
+.full-row {
+  grid-column: 1 / -1;
+}
+
 .monitor-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;

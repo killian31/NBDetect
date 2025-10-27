@@ -41,7 +41,7 @@ MODEL_PATH: Optional[Path] = None
 MODEL_FORMAT: Optional[str] = None  # "torch" or "onnx"
 ONNX_SESSION = None
 ONNX_INPUT_NAME = None
-DEFAULT_MODEL_PATH = Path("./checkpoint/model.pt")
+DEFAULT_MODEL_PATH = Path("runs/mobilenetv3_2500/epoch_10.pt")
 
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, object] = {
@@ -123,6 +123,7 @@ def _load_default_model() -> None:
         return
     try:
         load_model(DEFAULT_MODEL_PATH)
+        _set_state(message="Default model loaded. Ready to monitor.")
     except Exception as exc:  # pragma: no cover - best effort logging
         _set_state(
             status="error",
@@ -388,7 +389,7 @@ def latest_frame_route():
 
 
 def main():
-    app.run(host="0.0.0.0", port=5050, debug=True, threaded=False)
+    app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
 
 
 if __name__ == "__main__":

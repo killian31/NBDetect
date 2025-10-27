@@ -230,6 +230,8 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
         "false_positives": fp,
         "false_negatives": fn,
         "true_negatives": tn,
+        "false_positive_rate": fp / (fp + tn) if (fp + tn) > 0 else 0.0,
+        "false_negative_rate": fn / (fn + tp) if (fn + tp) > 0 else 0.0,
     }
 
 
@@ -321,6 +323,9 @@ def main() -> None:
                     "val/recall": val_stats["recall"],
                     "val/f1": val_stats["f1"],
                     "val/false_positives": val_stats["false_positives"],
+                    "val/false_negatives": val_stats["false_negatives"],
+                    "val/false_positive_rate": val_stats["false_positive_rate"],
+                    "val/false_negative_rate": val_stats["false_negative_rate"],
                     "lr": current_lr,
                 }
             )
@@ -358,18 +363,22 @@ def main() -> None:
             if wandb_run:
                 wandb_run.log(
                     {
-                        "best/val_false_positives": best_val_fp,
+                        "best/val_loss": val_stats["loss"],
                         "best/val_accuracy": best_val_acc,
+                        "best/val_precision": val_stats["precision"],
+                        "best/val_recall": val_stats["recall"],
+                        "best/val_f1": val_stats["f1"],
+                        "best/val_false_positives": val_stats["false_positives"],
+                        "best/val_false_negatives": val_stats["false_negatives"],
+                        "best/val_false_positive_rate": val_stats["false_positive_rate"],
+                        "best/val_false_negative_rate": val_stats["false_negative_rate"],
                         "best_epoch": epoch,
                     }
                 )
 
     print(f"Training complete. Best validation accuracy: {best_val_acc:.3f}")
 
-    best_model = build_model(pretrained=False)
-    load_checkpoint(best_model, best_ckpt_path, map_location=device)
-    best_model.to(device)
-    test_stats = evaluate(best_model, test_loader, criterion, device)
+    test_stats = evaluate(model, test_loader, criterion, device)
     history["test"] = test_stats
 
     print(
@@ -396,8 +405,10 @@ def main() -> None:
     print(f"Metrics log saved to {metrics_path}")
 
     if args.export_onnx:
-        export_path = args.onnx_output or args.output / "best_model.onnx"
-        export_best_checkpoint_to_onnx(best_ckpt_path, export_path, args.image_size)
+        best_export_path = args.onnx_output or args.output / "best_model.onnx"
+        last_export_path = args.onnx_output or args.output / "last_model.onnx"
+        export_best_checkpoint_to_onnx(best_ckpt_path, best_export_path, args.image_size)
+        export_best_checkpoint_to_onnx(epoch_ckpt_path, last_export_path, args.image_size)
 
     if wandb_run:
         wandb_run.finish()
