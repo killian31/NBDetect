@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
 
-from PIL import Image
 import torch
+from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms
+from torchvision.transforms import v2
 
 from .model import LABEL_TO_INDEX
 
@@ -45,25 +45,29 @@ def load_split_records(dataset_root: Path, split: str) -> List[Record]:
     return records
 
 
-def create_transforms(image_size: int = 224):
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    train_tf = transforms.Compose(
+def create_transforms(image_size: int = 224, min_size: int = 128, max_size: int = 720):
+    normalize = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    train_tf = v2.Compose(
         [
-            transforms.Resize((image_size, image_size)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.05)],
+            v2.RandomResize((min_size, max_size)),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandomApply(
+                [
+                    v2.ColorJitter(
+                        brightness=0.25, contrast=0.25, saturation=0.25, hue=0.05
+                    )
+                ],
                 p=0.9,
             ),
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5))], p=0.2),
-            transforms.ToTensor(),
+            v2.RandomApply([v2.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5))], p=0.2),
+            v2.ToTensor(),
             normalize,
         ]
     )
-    eval_tf = transforms.Compose(
+    eval_tf = v2.Compose(
         [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
+            v2.Resize((image_size, image_size)),
+            v2.ToTensor(),
             normalize,
         ]
     )
@@ -71,7 +75,7 @@ def create_transforms(image_size: int = 224):
 
 
 class NailBitingDataset(Dataset):
-    def __init__(self, records: Sequence[Record], transform: transforms.Compose) -> None:
+    def __init__(self, records: Sequence[Record], transform: v2.Compose) -> None:
         self.records = list(records)
         self.transform = transform
 

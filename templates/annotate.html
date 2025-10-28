@@ -11,7 +11,9 @@
 
   <div class="annotation-layout">
     <div class="image-frame">
+      <button id="prev-button" type="button" class="nav-button prev" aria-label="Previous frame">&larr;</button>
       <img id="frame" src="" alt="Captured frame" />
+      <button id="next-button" type="button" class="nav-button next" aria-label="Next frame">&rarr;</button>
     </div>
     <div class="annotation-controls">
       <h2>Choose a label</h2>
@@ -36,6 +38,22 @@
   const imgEl = document.getElementById("frame");
   const progressLabel = document.getElementById("progress-label");
   const buttons = document.querySelectorAll("button[data-label]");
+  const prevButton = document.getElementById("prev-button");
+  const nextButton = document.getElementById("next-button");
+
+  function formatLabel(label) {
+    if (label === "biting") return "Biting nails";
+    if (label === "not_biting") return "Not biting";
+    return "Unlabeled";
+  }
+
+  function updateActiveLabelButton(activeLabel) {
+    buttons.forEach((btn) => {
+      const isActive = btn.dataset.label === activeLabel;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  }
 
   function updateView() {
     if (!images.length) {
@@ -43,19 +61,27 @@
       imgEl.src = "";
       progressLabel.textContent = "No frames available for annotation.";
       buttons.forEach((btn) => (btn.disabled = true));
-      return;
-    }
-    if (annotatedCount >= images.length) {
-      imgEl.alt = "Annotation complete.";
-      progressLabel.textContent = "All frames annotated. Great work!";
-      buttons.forEach((btn) => (btn.disabled = true));
+      updateActiveLabelButton(null);
+      prevButton.disabled = true;
+      nextButton.disabled = true;
       return;
     }
     const current = images[currentIndex];
     imgEl.src = placeholderUrl.replace("__FILE__", encodeURIComponent(current.filename)) + `?t=${Date.now()}`;
     imgEl.alt = current.filename;
-    progressLabel.textContent = `${annotatedCount} / ${images.length} annotated`;
+    const positionStatus = `Viewing ${currentIndex + 1} / ${images.length}`;
+    const totalStatus = `${annotatedCount} / ${images.length} annotated`;
+    const labelStatus = `Current: ${formatLabel(current.label)}`;
+    if (annotatedCount >= images.length) {
+      progressLabel.textContent = `All frames annotated. Use arrows or buttons to review. ${positionStatus} · ${labelStatus}`;
+    } else {
+      progressLabel.textContent = `${totalStatus} · ${positionStatus} · ${labelStatus}`;
+    }
     buttons.forEach((btn) => (btn.disabled = false));
+    updateActiveLabelButton(current.label);
+    const disableNav = images.length <= 1;
+    prevButton.disabled = disableNav;
+    nextButton.disabled = disableNav;
   }
 
   async function submitLabel(label) {
@@ -74,22 +100,39 @@
       }
       if (!current.label) annotatedCount += 1;
       current.label = label;
-      moveNext();
+      moveNext({ skipAnnotated: true });
     } catch (error) {
       alert("Unable to save label. Check the console for details.");
       console.error(error);
     }
   }
 
-  function moveNext() {
-    if (annotatedCount >= images.length) {
-      progressLabel.textContent = "All frames annotated. Great work!";
-      buttons.forEach((btn) => (btn.disabled = true));
-      return;
+  function findNextUnannotated(startIndex) {
+    for (let offset = 1; offset <= images.length; offset += 1) {
+      const idx = (startIndex + offset) % images.length;
+      if (!images[idx].label) return idx;
     }
-    do {
-      currentIndex = (currentIndex + 1) % images.length;
-    } while (images[currentIndex].label);
+    return null;
+  }
+
+  function moveNext(options = {}) {
+    if (!images.length) return;
+    const skipAnnotated = Boolean(options.skipAnnotated);
+    if (skipAnnotated) {
+      const nextIdx = findNextUnannotated(currentIndex);
+      if (nextIdx !== null) {
+        currentIndex = nextIdx;
+        updateView();
+        return;
+      }
+    }
+    currentIndex = (currentIndex + 1) % images.length;
+    updateView();
+  }
+
+  function movePrevious() {
+    if (!images.length) return;
+    currentIndex = (currentIndex - 1 + images.length) % images.length;
     updateView();
   }
 
@@ -97,12 +140,31 @@
     btn.addEventListener("click", () => submitLabel(btn.dataset.label));
   });
 
+  prevButton.addEventListener("click", () => movePrevious());
+  nextButton.addEventListener("click", () => moveNext());
+
   window.addEventListener("keydown", (event) => {
-    if (event.key.toLowerCase() === "b") {
+    const key = event.key.toLowerCase();
+    const tagName = event.target.tagName;
+    const isFormField = tagName === "INPUT" || tagName === "TEXTAREA";
+    if (event.metaKey || event.ctrlKey || event.altKey || isFormField) {
+      return;
+    }
+    if (key === "arrowleft") {
+      event.preventDefault();
+      movePrevious();
+      return;
+    }
+    if (key === "arrowright") {
+      event.preventDefault();
+      moveNext();
+      return;
+    }
+    if (key === "b") {
       event.preventDefault();
       submitLabel("biting");
     }
-    if (event.key.toLowerCase() === "n") {
+    if (key === "n") {
       event.preventDefault();
       submitLabel("not_biting");
     }

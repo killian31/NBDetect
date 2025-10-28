@@ -11,15 +11,14 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 from flask import (
     Flask,
-    abort,
     Response,
+    abort,
     jsonify,
     render_template,
     request,
     send_from_directory,
     url_for,
 )
-
 
 app = Flask(__name__)
 
@@ -66,7 +65,11 @@ def _public_state() -> Dict[str, object]:
         state_copy = CAPTURE_STATE.copy()
     progress = 0.0
     remaining = None
-    if state_copy["status"] == "running" and state_copy["started_at"] and state_copy["duration"]:
+    if (
+        state_copy["status"] == "running"
+        and state_copy["started_at"]
+        and state_copy["duration"]
+    ):
         elapsed = time.time() - float(state_copy["started_at"])
         duration = float(state_copy["duration"])
         progress = max(0.0, min(elapsed / duration, 1.0))
@@ -151,21 +154,31 @@ def start_capture(
 
 
 def capture_worker(
-    session_dir: Path, duration_seconds: float, interval_seconds: float, stop_event: threading.Event
+    session_dir: Path,
+    duration_seconds: float,
+    interval_seconds: float,
+    stop_event: threading.Event,
 ) -> None:
     images_dir = session_dir / "images"
     captures_log = session_dir / "captures.csv"
     cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
-        _set_state(status="failed", message="Unable to access the default camera.", thread=None, stop_event=None)
+        _set_state(
+            status="failed",
+            message="Unable to access the default camera.",
+            thread=None,
+            stop_event=None,
+        )
         _reset_preview()
         return
 
     end_time = time.time() + duration_seconds
     shot_idx = 0
     with captures_log.open("a", newline="") as log_file:
-        capture_writer = csv.DictWriter(log_file, fieldnames=["filename", "captured_at"])
+        capture_writer = csv.DictWriter(
+            log_file, fieldnames=["filename", "captured_at"]
+        )
 
         while time.time() < end_time and not stop_event.is_set():
             ret, frame = cap.read()
@@ -181,7 +194,9 @@ def capture_worker(
             filename = f"{shot_idx:05d}_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.jpg"
             file_path = images_dir / filename
             if cv2.imwrite(str(file_path), frame):
-                capture_writer.writerow({"filename": filename, "captured_at": timestamp.isoformat()})
+                capture_writer.writerow(
+                    {"filename": filename, "captured_at": timestamp.isoformat()}
+                )
                 log_file.flush()
                 shot_idx += 1
                 _set_state(captured=shot_idx)
@@ -196,10 +211,20 @@ def capture_worker(
     cap.release()
 
     if stop_event.is_set():
-        _set_state(status="cancelled", message="Capture cancelled.", thread=None, stop_event=None)
+        _set_state(
+            status="cancelled",
+            message="Capture cancelled.",
+            thread=None,
+            stop_event=None,
+        )
         _reset_preview()
     elif shot_idx == 0:
-        _set_state(status="failed", message="No frames captured. Please retry.", thread=None, stop_event=None)
+        _set_state(
+            status="failed",
+            message="No frames captured. Please retry.",
+            thread=None,
+            stop_event=None,
+        )
         _reset_preview()
     else:
         _set_state(
@@ -218,7 +243,9 @@ def cancel_capture() -> None:
         stop_event.set()
 
 
-def list_sessions() -> Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, Dict[str, int]]]:
+def list_sessions() -> (
+    Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, Dict[str, int]]]
+):
     groups: List[Dict[str, object]] = []
     dataset_root = DATASET_ROOT.resolve()
     totals = {"captured": 0, "annotated": 0}
@@ -230,7 +257,9 @@ def list_sessions() -> Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, 
         split_annotated = 0
         split_labels = {"biting": 0, "not_biting": 0}
         if split_dir.exists():
-            for session_dir in sorted(split_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            for session_dir in sorted(
+                split_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
+            ):
                 images_dir = session_dir / "images"
                 if not images_dir.exists():
                     continue
@@ -248,9 +277,9 @@ def list_sessions() -> Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, 
                         "session_id": session_id,
                         "captured": captured_count,
                         "annotated": annotated_count,
-                        "created_at": datetime.fromtimestamp(session_dir.stat().st_mtime).strftime(
-                            "%b %d, %Y %H:%M"
-                        ),
+                        "created_at": datetime.fromtimestamp(
+                            session_dir.stat().st_mtime
+                        ).strftime("%b %d, %Y %H:%M"),
                         "split": split,
                     }
                 )
@@ -260,7 +289,14 @@ def list_sessions() -> Tuple[List[Dict[str, object]], Dict[str, int], Dict[str, 
         totals["annotated"] += split_annotated
         for label_name, count in split_labels.items():
             label_totals[label_name] += count
-        groups.append({"split": split, "sessions": sessions, "captured": split_captured, "annotated": split_annotated})
+        groups.append(
+            {
+                "split": split,
+                "sessions": sessions,
+                "captured": split_captured,
+                "annotated": split_annotated,
+            }
+        )
         groups[-1]["label_counts"] = split_labels
     return groups, totals, label_totals
 
@@ -380,7 +416,10 @@ def annotate_view(split: str, session_id: str):
     images_dir = session_dir / "images"
     image_files = sorted([p.name for p in images_dir.glob("*.jpg")])
     annotations = _load_annotations(session_dir)
-    payload = [{"filename": name, "label": annotations.get(name, {}).get("label")} for name in image_files]
+    payload = [
+        {"filename": name, "label": annotations.get(name, {}).get("label")}
+        for name in image_files
+    ]
     start_index = 0
     for idx, entry in enumerate(payload):
         if not entry["label"]:

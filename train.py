@@ -9,14 +9,28 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from nbdetect.data import NailBitingDataset, Record, create_transforms, load_split_records
+from nbdetect.data import (
+    NailBitingDataset,
+    Record,
+    create_transforms,
+    load_split_records,
+)
 from nbdetect.model import LABEL_TO_INDEX, build_model, load_checkpoint
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train nail-biting detector with MobileNetV3.")
-    parser.add_argument("--dataset", type=Path, default=Path("dataset"), help="Path to dataset root.")
-    parser.add_argument("--output", type=Path, default=Path("runs/latest"), help="Directory to store checkpoints.")
+    parser = argparse.ArgumentParser(
+        description="Train nail-biting detector with MobileNetV3."
+    )
+    parser.add_argument(
+        "--dataset", type=Path, default=Path("dataset"), help="Path to dataset root."
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("runs/latest"),
+        help="Directory to store checkpoints.",
+    )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -24,9 +38,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=13)
-    parser.add_argument("--freeze-base", action="store_true", help="Freeze backbone and train classifier only.")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging.")
+    parser.add_argument(
+        "--freeze-base",
+        action="store_true",
+        help="Freeze backbone and train classifier only.",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    parser.add_argument(
+        "--use-wandb", action="store_true", help="Enable Weights & Biases logging."
+    )
     parser.add_argument("--wandb-project", type=str, default="nbdetect")
     parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument(
@@ -34,7 +56,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Export the best checkpoint to ONNX after training completes.",
     )
-    parser.add_argument("--onnx-output", type=Path, default=None, help="Destination for ONNX model.")
+    parser.add_argument(
+        "--onnx-output", type=Path, default=None, help="Destination for ONNX model."
+    )
     parser.add_argument(
         "--class-balance",
         action="store_true",
@@ -65,7 +89,9 @@ def compute_class_weights(records: List[Record]) -> List[float]:
     for label, idx in sorted(LABEL_TO_INDEX.items(), key=lambda item: item[1]):
         count = counts.get(label, 0)
         if count == 0:
-            raise RuntimeError(f"No samples found for label '{label}' to compute class weights.")
+            raise RuntimeError(
+                f"No samples found for label '{label}' to compute class weights."
+            )
         weight = total / (num_classes * count)
         weights.append(weight)
     return weights
@@ -115,7 +141,9 @@ def init_wandb(args: argparse.Namespace):
     try:
         import wandb
     except ImportError as exc:
-        raise RuntimeError("wandb is not installed. Install it or omit --use-wandb.") from exc
+        raise RuntimeError(
+            "wandb is not installed. Install it or omit --use-wandb."
+        ) from exc
 
     run = wandb.init(
         project=args.wandb_project,
@@ -125,7 +153,9 @@ def init_wandb(args: argparse.Namespace):
     return run
 
 
-def export_best_checkpoint_to_onnx(checkpoint_path: Path, export_path: Path, image_size: int) -> None:
+def export_best_checkpoint_to_onnx(
+    checkpoint_path: Path, export_path: Path, image_size: int
+) -> None:
     if not checkpoint_path.exists():
         print("Best checkpoint not found; skipping ONNX export.")
         return
@@ -182,7 +212,9 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device) -> Dict[str, float]:
+def evaluate(
+    model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device
+) -> Dict[str, float]:
     model.eval()
     total_loss = 0.0
     total_correct = 0
@@ -208,16 +240,28 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
         labels_cat = torch.cat(labels_all)
         positive_idx = LABEL_TO_INDEX["biting"]
         negative_idx = LABEL_TO_INDEX["not_biting"]
-        tp = torch.sum((preds_cat == positive_idx) & (labels_cat == positive_idx)).item()
-        fp = torch.sum((preds_cat == positive_idx) & (labels_cat == negative_idx)).item()
-        fn = torch.sum((preds_cat == negative_idx) & (labels_cat == positive_idx)).item()
-        tn = torch.sum((preds_cat == negative_idx) & (labels_cat == negative_idx)).item()
+        tp = torch.sum(
+            (preds_cat == positive_idx) & (labels_cat == positive_idx)
+        ).item()
+        fp = torch.sum(
+            (preds_cat == positive_idx) & (labels_cat == negative_idx)
+        ).item()
+        fn = torch.sum(
+            (preds_cat == negative_idx) & (labels_cat == positive_idx)
+        ).item()
+        tn = torch.sum(
+            (preds_cat == negative_idx) & (labels_cat == negative_idx)
+        ).item()
     else:
         tp = fp = fn = tn = 0
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    f1 = (
+        (2 * precision * recall / (precision + recall))
+        if (precision + recall) > 0
+        else 0.0
+    )
     accuracy = total_correct / total_examples if total_examples else 0.0
 
     return {
@@ -258,17 +302,23 @@ def main() -> None:
     print(f"Using device: {device}")
     train_loader, val_loader, test_loader, class_weights = create_loaders(args)
     weight_tensor = (
-        torch.tensor(class_weights, dtype=torch.float32, device=device) if class_weights is not None else None
+        torch.tensor(class_weights, dtype=torch.float32, device=device)
+        if class_weights is not None
+        else None
     )
 
     model = build_model(pretrained=True, freeze_base=args.freeze_base).to(device)
-    print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters.")
+    print(
+        f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters."
+    )
     if class_weights:
         print(f"Using class weights: {class_weights}")
     else:
         print("Not using class weights.")
     criterion = nn.CrossEntropyLoss(weight=weight_tensor)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
     try:
         milestones = parse_milestones(args.lr_decay_milestones)
     except ValueError as exc:
@@ -294,7 +344,9 @@ def main() -> None:
         if scheduler:
             scheduler.step()
 
-        current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
+        current_lr = (
+            scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
+        )
         elapsed = time.time() - epoch_start_time
         remaining_epochs = args.epochs - epoch
         eta_seconds = remaining_epochs * elapsed
@@ -343,7 +395,8 @@ def main() -> None:
         )
 
         if val_stats["false_positives"] < best_val_fp or (
-            val_stats["false_positives"] == best_val_fp and val_stats["accuracy"] >= best_val_acc
+            val_stats["false_positives"] == best_val_fp
+            and val_stats["accuracy"] >= best_val_acc
         ):
             best_val_fp = val_stats["false_positives"]
             best_val_acc = val_stats["accuracy"]
@@ -358,7 +411,7 @@ def main() -> None:
                 best_ckpt_path,
             )
             print(
-                f"  ↳ Saved new best checkpoint to {best_ckpt_path} (val_fp={best_val_fp}, acc={best_val_acc:.3f})"
+                f"      Saved new best checkpoint to {best_ckpt_path} (val_fp={best_val_fp}, acc={best_val_acc:.3f})"
             )
             if wandb_run:
                 wandb_run.log(
@@ -370,8 +423,12 @@ def main() -> None:
                         "best/val_f1": val_stats["f1"],
                         "best/val_false_positives": val_stats["false_positives"],
                         "best/val_false_negatives": val_stats["false_negatives"],
-                        "best/val_false_positive_rate": val_stats["false_positive_rate"],
-                        "best/val_false_negative_rate": val_stats["false_negative_rate"],
+                        "best/val_false_positive_rate": val_stats[
+                            "false_positive_rate"
+                        ],
+                        "best/val_false_negative_rate": val_stats[
+                            "false_negative_rate"
+                        ],
                         "best_epoch": epoch,
                     }
                 )
@@ -407,8 +464,12 @@ def main() -> None:
     if args.export_onnx:
         best_export_path = args.onnx_output or args.output / "best_model.onnx"
         last_export_path = args.onnx_output or args.output / "last_model.onnx"
-        export_best_checkpoint_to_onnx(best_ckpt_path, best_export_path, args.image_size)
-        export_best_checkpoint_to_onnx(epoch_ckpt_path, last_export_path, args.image_size)
+        export_best_checkpoint_to_onnx(
+            best_ckpt_path, best_export_path, args.image_size
+        )
+        export_best_checkpoint_to_onnx(
+            epoch_ckpt_path, last_export_path, args.image_size
+        )
 
     if wandb_run:
         wandb_run.finish()

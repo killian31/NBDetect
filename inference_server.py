@@ -8,11 +8,10 @@ import cv2
 import torch
 import torch.nn.functional as F
 from flask import Flask, Response, jsonify, render_template, request
+from torchvision.transforms import v2
 from werkzeug.utils import secure_filename
-from torchvision import transforms
 
 from nbdetect.model import INDEX_TO_LABEL, LABEL_TO_INDEX, build_model, load_checkpoint
-
 
 app = Flask(__name__)
 
@@ -23,12 +22,12 @@ IMAGE_SIZE = 384
 
 
 def build_transform(image_size: int):
-    return transforms.Compose(
+    return v2.Compose(
         [
-            transforms.ToPILImage(),
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            v2.ToPILImage(),
+            v2.Resize((image_size, image_size)),
+            v2.ToTensor(),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
@@ -41,7 +40,7 @@ MODEL_PATH: Optional[Path] = None
 MODEL_FORMAT: Optional[str] = None  # "torch" or "onnx"
 ONNX_SESSION = None
 ONNX_INPUT_NAME = None
-DEFAULT_MODEL_PATH = Path("runs/mobilenetv3_2500/epoch_10.pt")
+DEFAULT_MODEL_PATH = Path("checkpoint/model.pt")
 
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, object] = {
@@ -81,13 +80,17 @@ def load_model(model_path: Path) -> None:
         try:
             import onnxruntime as ort
         except ImportError as exc:
-            raise RuntimeError("onnxruntime is required for ONNX models. Install it with `pip install onnxruntime`.") from exc
+            raise RuntimeError(
+                "onnxruntime is required for ONNX models. Install it with `pip install onnxruntime`."
+            ) from exc
 
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         try:
             session = ort.InferenceSession(str(model_path), providers=providers)
         except Exception:
-            session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            session = ort.InferenceSession(
+                str(model_path), providers=["CPUExecutionProvider"]
+            )
 
         with MODEL_LOCK:
             MODEL = None
@@ -135,7 +138,9 @@ def _load_default_model() -> None:
 _load_default_model()
 
 
-def detection_worker(stop_event: threading.Event, resume_event: threading.Event) -> None:
+def detection_worker(
+    stop_event: threading.Event, resume_event: threading.Event
+) -> None:
     global LATEST_FRAME
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -162,7 +167,9 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
 
         if model_format == "onnx":
             if session is None or ONNX_INPUT_NAME is None:
-                _set_state(status="error", message="ONNX model session not initialized.")
+                _set_state(
+                    status="error", message="ONNX model session not initialized."
+                )
                 break
             ort_inputs = {ONNX_INPUT_NAME: tensor.numpy()}
             logits_np = session.run(None, ort_inputs)[0]
@@ -219,11 +226,18 @@ def detection_worker(stop_event: threading.Event, resume_event: threading.Event)
                 cv2.LINE_AA,
             )
         state_update: Dict[str, object] = {
-            "probabilities": {"biting": round(biting_prob, 4), "not_biting": round(not_biting_prob, 4)},
+            "probabilities": {
+                "biting": round(biting_prob, 4),
+                "not_biting": round(not_biting_prob, 4),
+            },
             "message": (
                 "Nail biting detected! Stay alert."
                 if triggered
-                else "Monitoring in progress…" if pred_label == "not_biting" else "Potential nail biting detected."
+                else (
+                    "Monitoring in progress…"
+                    if pred_label == "not_biting"
+                    else "Potential nail biting detected."
+                )
             ),
             "alert": triggered,
         }
@@ -255,7 +269,9 @@ def start_detection(threshold: float) -> None:
     STOP_EVENT = threading.Event()
     RESUME_EVENT = threading.Event()
     _set_state(threshold=float(threshold))
-    DETECTION_THREAD = threading.Thread(target=detection_worker, args=(STOP_EVENT, RESUME_EVENT), daemon=True)
+    DETECTION_THREAD = threading.Thread(
+        target=detection_worker, args=(STOP_EVENT, RESUME_EVENT), daemon=True
+    )
     DETECTION_THREAD.start()
 
 
@@ -370,7 +386,9 @@ def video_feed():
                 frame = LATEST_FRAME
                 FRAME_EVENT.clear()
             if frame:
-                yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+                yield (
+                    b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                )
             else:
                 time.sleep(0.1)
 
