@@ -151,8 +151,6 @@ def generate_plot(
         latencies,
         accuracies,
         s=marker_sizes,
-        c=IMAGE_SIZES,
-        cmap="viridis",
         edgecolor="black",
     )
 
@@ -171,9 +169,6 @@ def generate_plot(
     ax.set_title("Accuracy vs Latency Across Input Resolutions")
     ax.set_xlim(left=0)
     ax.set_ylim(0.0, 1.0)
-
-    cbar = fig.colorbar(scatter, ax=ax, label="Input size (px)")
-    cbar.set_ticks(IMAGE_SIZES)
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -40,7 +40,7 @@ MODEL_PATH: Optional[Path] = None
 MODEL_FORMAT: Optional[str] = None  # "torch" or "onnx"
 ONNX_SESSION = None
 ONNX_INPUT_NAME = None
-DEFAULT_MODEL_PATH = Path("checkpoint/model.pt")
+DEFAULT_MODEL_PATH = Path("runs/mobilenetv3_224/epoch_12.pt")
 
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, object] = {
