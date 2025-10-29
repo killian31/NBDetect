@@ -97,6 +97,23 @@ def compute_class_weights(records: List[Record]) -> List[float]:
     return weights
 
 
+def collate_with_padding(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    images, labels = zip(*batch)
+    channels = images[0].shape[0]
+    max_h = max(img.shape[1] for img in images)
+    max_w = max(img.shape[2] for img in images)
+    padded = images[0].new_zeros((len(images), channels, max_h, max_w))
+    for idx, img in enumerate(images):
+        _, h, w = img.shape
+        y_offset = (max_h - h) // 2
+        x_offset = (max_w - w) // 2
+        padded[idx, :, y_offset : y_offset + h, x_offset : x_offset + w] = img
+    labels_tensor = torch.stack(labels)
+    return padded, labels_tensor
+
+
 def create_loaders(
     args: argparse.Namespace,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[List[float]]]:
@@ -117,6 +134,7 @@ def create_loaders(
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
+        collate_fn=collate_with_padding,
     )
     val_loader = DataLoader(
         val_ds,
@@ -124,6 +142,7 @@ def create_loaders(
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
+        collate_fn=collate_with_padding,
     )
     test_loader = DataLoader(
         test_ds,
@@ -131,6 +150,7 @@ def create_loaders(
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
+        collate_fn=collate_with_padding,
     )
     return train_loader, val_loader, test_loader, class_weights
 

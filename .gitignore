@@ -44,3 +44,4 @@ instance/
 *.pth
 *.onnx
 *.png
+*.zip

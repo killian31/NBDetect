@@ -45,11 +45,14 @@ def load_split_records(dataset_root: Path, split: str) -> List[Record]:
     return records
 
 
-def create_transforms(image_size: int = 224, min_size: int = 128, max_size: int = 720):
+def create_transforms(image_size: int = 224):
+    if image_size <= 0:
+        raise ValueError("image_size must be positive.")
+
     normalize = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     train_tf = v2.Compose(
         [
-            v2.RandomResize((min_size, max_size)),
+            v2.Resize(image_size),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomApply(
                 [
@@ -60,14 +63,16 @@ def create_transforms(image_size: int = 224, min_size: int = 128, max_size: int 
                 p=0.9,
             ),
             v2.RandomApply([v2.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5))], p=0.2),
-            v2.ToTensor(),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
             normalize,
         ]
     )
     eval_tf = v2.Compose(
         [
-            v2.Resize((image_size, image_size)),
-            v2.ToTensor(),
+            v2.Resize(image_size, antialias=True),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
             normalize,
         ]
     )
